@@ -2,11 +2,18 @@
 monitor.py — Real-time rich TUI monitoring dashboard for the Tabula Rasa agent.
 Run this on the host machine while the agent container is running.
 
+Controls:
+  Page Up / Page Down  — Scroll the event log
+  Home                 — Jump to oldest
+  End / F              — Jump to newest (resume auto-tail)
+  Q                    — Quit
+
 Usage: python monitor.py
 """
 import asyncio
 import json
 import sys
+import msvcrt
 from datetime import datetime
 from collections import deque
 
@@ -17,70 +24,101 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.style import Style
 from rich import box
 
-MONITOR_URI = "ws://localhost:8766"
-MAX_LOG_LINES = 60
+MONITOR_URI  = "ws://localhost:8766"
+MAX_LOG_LINES = 2000   # Total history kept in memory
+SCROLL_STEP   = 5      # Lines moved per Page Up/Down key
 
 console = Console()
 
-# ── Colour palette ──────────────────────────────────────────────────────────
+# ── Colour / icon palette ────────────────────────────────────────────────────
 COLOURS = {
-    "cycle_start":      "bold cyan",
-    "cycle_end":        "bold green",
-    "model_call":       "bold blue",
-    "model_response":   "blue",
-    "tool_call":        "bold yellow",
-    "tool_result":      "yellow",
-    "journal_write":    "magenta",
-    "kg_update":        "bright_magenta",
-    "chat_in":          "bold white",
-    "chat_out":         "green",
-    "error":            "bold red",
-    "think":            "dim white",
-    "status":           "dim cyan",
+    "cycle_start":    "bold cyan",
+    "cycle_end":      "bold green",
+    "model_call":     "bold blue",
+    "model_response": "blue",
+    "tool_call":      "bold yellow",
+    "tool_result":    "yellow",
+    "journal_write":  "magenta",
+    "kg_update":      "bright_magenta",
+    "chat_in":        "bold white",
+    "chat_out":       "green",
+    "error":          "bold red",
+    "think":          "dim white",
+    "status":         "dim cyan",
+}
+ICONS = {
+    "cycle_start":    "⟳",
+    "cycle_end":      "✓",
+    "model_call":     "🧠",
+    "model_response": "💬",
+    "tool_call":      "🔧",
+    "tool_result":    "📤",
+    "journal_write":  "📓",
+    "kg_update":      "🕸 ",
+    "chat_in":        "👤",
+    "chat_out":       "🤖",
+    "error":          "❌",
+    "think":          "💭",
+    "status":         "ℹ ",
 }
 
-ICONS = {
-    "cycle_start":      "⟳",
-    "cycle_end":        "✓",
-    "model_call":       "🧠",
-    "model_response":   "💬",
-    "tool_call":        "🔧",
-    "tool_result":      "📤",
-    "journal_write":    "📓",
-    "kg_update":        "🕸 ",
-    "chat_in":          "👤",
-    "chat_out":         "🤖",
-    "error":            "❌",
-    "think":            "💭",
-    "status":           "ℹ ",
-}
 
 class MonitorState:
     def __init__(self):
         self.log: deque = deque(maxlen=MAX_LOG_LINES)
+        self.scroll_offset: int = 0   # 0 = auto-tail; > 0 = lines from bottom
+        self.auto_tail: bool = True
+        self.connected: bool = False
         self.stats = {
-            "uptime": "–",
-            "cycles": 0,
-            "tool_calls": 0,
-            "errors": 0,
-            "last_model": "–",
-            "last_tool": "–",
+            "cycles":      0,
+            "tool_calls":  0,
+            "errors":      0,
+            "last_model":  "–",
+            "last_tool":   "–",
             "last_action": "–",
         }
-        self.connected = False
-        self.current_think = ""
+
+    def scroll_up(self):
+        self.auto_tail = False
+        self.scroll_offset = min(self.scroll_offset + SCROLL_STEP, max(0, len(self.log) - 1))
+
+    def scroll_down(self):
+        self.scroll_offset = max(0, self.scroll_offset - SCROLL_STEP)
+        if self.scroll_offset == 0:
+            self.auto_tail = True
+
+    def jump_top(self):
+        self.auto_tail = False
+        self.scroll_offset = max(0, len(self.log) - 1)
+
+    def jump_bottom(self):
+        self.scroll_offset = 0
+        self.auto_tail = True
+
+    def visible_lines(self, n: int):
+        """Return the last n Rich Text lines, respecting scroll_offset."""
+        log = list(self.log)
+        total = len(log)
+        if total == 0:
+            return []
+        if self.auto_tail:
+            return log[-n:]
+        # scroll_offset > 0: show a window ending (total - offset) lines from start
+        end   = max(0, total - self.scroll_offset)
+        start = max(0, end - n)
+        return log[start:end]
+
 
 state = MonitorState()
 
+
 def format_event(evt: dict) -> Text:
-    """Format a single event as a coloured Rich Text line."""
-    ts = evt.get("ts", "??:??:??")
-    etype = evt.get("type", "status")
+    ts     = evt.get("ts", "??:??:??")
+    etype  = evt.get("type", "status")
     colour = COLOURS.get(etype, "white")
-    icon = ICONS.get(etype, "•")
+    icon   = ICONS.get(etype, "•")
 
     line = Text()
     line.append(f"[{ts}] ", style="dim")
@@ -88,70 +126,58 @@ def format_event(evt: dict) -> Text:
 
     if etype == "cycle_start":
         line.append("── Autonomous cycle started ──", style=colour)
-
     elif etype == "cycle_end":
         line.append(f"── Cycle complete ({evt.get('duration','?')}s) ──", style=colour)
-
     elif etype == "model_call":
         model = evt.get("model", "?")
-        ctx_tokens = evt.get("ctx_tokens", "?")
-        line.append(f"Calling ", style=colour)
+        ctx   = evt.get("ctx_tokens", "?")
+        line.append("Calling ", style=colour)
         line.append(f"[{model}]", style="bold " + colour)
-        line.append(f"   ctx={ctx_tokens} tokens", style="dim")
-
+        line.append(f"   ctx={ctx} tok", style="dim")
     elif etype == "model_response":
-        content = evt.get("content", "")[:120]
+        content   = str(evt.get("content", ""))
         has_tools = evt.get("has_tool_calls", False)
         if has_tools:
             line.append("Model chose to use tools", style=colour)
         else:
-            line.append(f"Response: ", style=colour)
-            line.append(content + ("…" if len(evt.get("content","")) > 120 else ""), style="dim white")
-
+            line.append("Response: ", style=colour)
+            line.append(content[:140] + ("…" if len(content) > 140 else ""), style="dim white")
     elif etype == "tool_call":
         tool = evt.get("tool", "?")
         args = json.dumps(evt.get("args", {}))
         if len(args) > 80:
             args = args[:80] + "…"
-        line.append(f"Tool: ", style=colour)
+        line.append("Tool: ", style=colour)
         line.append(tool, style="bold " + colour)
-        line.append(f"  args={args}", style="dim")
-
+        line.append(f"  {args}", style="dim")
     elif etype == "tool_result":
-        tool = evt.get("tool", "?")
-        result = str(evt.get("result", ""))[:120]
+        tool   = evt.get("tool", "?")
+        result = str(evt.get("result", ""))
         line.append(f"Result [{tool}]: ", style=colour)
-        line.append(result + ("…" if len(str(evt.get("result",""))) > 120 else ""), style="dim white")
-
+        line.append(result[:140] + ("…" if len(result) > 140 else ""), style="dim white")
     elif etype == "journal_write":
-        snippet = evt.get("snippet", "")[:100]
-        line.append("Journal: ", style=colour)
-        line.append(snippet, style="dim white")
-
+        snippet = str(evt.get("snippet", ""))
+        line.append("Journal ✍  ", style=colour)
+        line.append(snippet[:120], style="dim white")
     elif etype == "kg_update":
         line.append(f"KG: {evt.get('subject')} → {evt.get('predicate')} → {evt.get('object')}", style=colour)
-
     elif etype == "chat_in":
         line.append("User: ", style=colour)
-        line.append(evt.get("text", ""), style="bold white")
-
+        line.append(str(evt.get("text", "")), style="bold white")
     elif etype == "chat_out":
-        snippet = evt.get("snippet", "")[:120]
-        line.append("Agent replies: ", style=colour)
-        line.append(snippet, style="dim white")
-
+        snippet = str(evt.get("snippet", ""))
+        line.append("Agent: ", style=colour)
+        line.append(snippet[:140], style="dim white")
     elif etype == "think":
-        # Chain-of-thought reasoning (stripped <think> blocks)
-        thought = evt.get("thought", "")[:200]
-        line.append(f"💭 {thought}", style="dim italic")
-
+        thought = str(evt.get("thought", ""))
+        line.append(f"{thought[:200]}", style="dim italic")
     elif etype == "error":
         line.append(f"ERROR: {evt.get('message','')}", style=colour)
-
     else:
-        line.append(str(evt), style="dim")
+        line.append(str(evt)[:160], style="dim")
 
     return line
+
 
 def build_layout() -> Layout:
     layout = Layout()
@@ -166,43 +192,61 @@ def build_layout() -> Layout:
     )
     return layout
 
+
 def render_header() -> Panel:
-    status = "[bold green]CONNECTED[/]" if state.connected else "[bold red]DISCONNECTED[/]"
+    conn   = "[bold green]● LIVE[/]" if state.connected else "[bold red]○ DISCONNECTED[/]"
+    tail   = "[dim](auto-tail)[/]" if state.auto_tail else f"[dim](scroll -{state.scroll_offset})[/]"
+    now    = datetime.now().strftime("%H:%M:%S")
     return Panel(
-        f"[bold]Tabula Rasa Agent Monitor[/bold]  │  {status}  │  [dim]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]",
+        f"[bold]Tabula Rasa — Agent Monitor[/bold]   {conn}  {tail}   [dim]{now}[/dim]",
         style="bold cyan",
         box=box.HORIZONTALS,
     )
 
-def render_log() -> Panel:
-    lines = Text()
-    for line in state.log:
-        lines.append_text(line)
-        lines.append("\n")
-    return Panel(lines, title="[bold]Event Stream[/]", border_style="cyan", box=box.ROUNDED)
+
+def render_log(body_height: int) -> Panel:
+    # Account for panel borders (2 lines) and padding
+    usable = max(1, body_height - 2)
+    lines  = state.visible_lines(usable)
+    text   = Text()
+    for line in lines:
+        text.append_text(line)
+        text.append("\n")
+    scroll_hint = "" if state.auto_tail else f" ↑ {state.scroll_offset} lines from bottom"
+    return Panel(
+        text,
+        title=f"[bold]Event Stream[/]{scroll_hint}",
+        border_style="cyan",
+        box=box.ROUNDED,
+    )
+
 
 def render_sidebar() -> Panel:
     grid = Table.grid(padding=(0, 1))
-    grid.add_column(style="dim")
-    grid.add_column(style="bold")
+    grid.add_column(style="dim", no_wrap=True)
+    grid.add_column(style="bold", no_wrap=True)
     rows = [
         ("Cycles",      str(state.stats["cycles"])),
         ("Tool calls",  str(state.stats["tool_calls"])),
         ("Errors",      str(state.stats["errors"])),
-        ("Last model",  state.stats["last_model"]),
+        ("Last model",  state.stats["last_model"][-20:]),
         ("Last tool",   state.stats["last_tool"]),
         ("Last action", state.stats["last_action"]),
+        ("",            ""),
+        ("History",     str(len(state.log))),
     ]
     for label, value in rows:
         grid.add_row(label, value)
     return Panel(grid, title="[bold]Stats[/]", border_style="magenta", box=box.ROUNDED)
 
+
 def render_footer() -> Panel:
     return Panel(
-        "[dim]q[/dim] Quit  │  Events scroll automatically  │  Open [bold]chat_client.py[/bold] to talk to the agent",
+        "[dim]PgUp/PgDn[/dim] Scroll  │  [dim]Home[/dim] Oldest  │  [dim]End/F[/dim] Latest  │  [dim]Q[/dim] Quit",
         box=box.HORIZONTALS,
         style="dim",
     )
+
 
 def update_stats(evt: dict):
     etype = evt.get("type")
@@ -211,16 +255,24 @@ def update_stats(evt: dict):
         state.stats["last_action"] = "Running cycle"
     elif etype == "tool_call":
         state.stats["tool_calls"] += 1
-        state.stats["last_tool"] = evt.get("tool", "?")
+        state.stats["last_tool"]   = evt.get("tool", "?")
         state.stats["last_action"] = f"Tool: {evt.get('tool','?')}"
     elif etype == "error":
         state.stats["errors"] += 1
     elif etype == "model_call":
-        state.stats["last_model"] = evt.get("model", "?")
+        state.stats["last_model"]  = evt.get("model", "?")
     elif etype == "chat_in":
         state.stats["last_action"] = "Chatting"
 
-async def receive_events(layout: Layout, live: Live):
+
+def refresh_all(layout: Layout, live: Live, body_height: int):
+    layout["header"].update(render_header())
+    layout["log"].update(render_log(body_height))
+    layout["sidebar"].update(render_sidebar())
+    live.refresh()
+
+
+async def receive_events(layout: Layout, live: Live, body_height_ref: list):
     while True:
         try:
             state.connected = False
@@ -231,39 +283,97 @@ async def receive_events(layout: Layout, live: Live):
                     evt = json.loads(raw)
                     state.log.append(format_event(evt))
                     update_stats(evt)
-                    layout["header"].update(render_header())
-                    layout["log"].update(render_log())
-                    layout["sidebar"].update(render_sidebar())
-                    live.refresh()
+                    refresh_all(layout, live, body_height_ref[0])
         except Exception as e:
             state.connected = False
-            state.log.append(Text(f"── Disconnected: {e} – reconnecting in 3s ──", style="bold red"))
+            state.log.append(Text(f"── {type(e).__name__}: {e} — reconnecting in 3s ──", style="bold red"))
+            refresh_all(layout, live, body_height_ref[0])
             await asyncio.sleep(3)
 
-async def keyboard_listener():
-    """Allow pressing q to quit."""
-    loop = asyncio.get_event_loop()
+
+async def keyboard_listener(layout: Layout, live: Live, body_height_ref: list):
+    """
+    Non-blocking Windows key reader via msvcrt.
+    Extended keys (arrows, PgUp, PgDn, Home, End) arrive as two bytes:
+      b'\xe0' or b'\x00' followed by a scan code.
+    """
+    PGUP  = b'I'
+    PGDN  = b'Q'
+    HOME  = b'G'
+    END   = b'O'
+    loop  = asyncio.get_event_loop()
+
+    def read_key():
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch in (b'\xe0', b'\x00'):          # extended key prefix
+                ch2 = msvcrt.getch()
+                return ("ext", ch2)
+            return ("char", ch)
+        return None
+
     while True:
-        char = await loop.run_in_executor(None, sys.stdin.read, 1)
-        if char.lower() == "q":
-            sys.exit(0)
+        key = await loop.run_in_executor(None, read_key)
+        if key is None:
+            await asyncio.sleep(0.05)
+            continue
+        kind, val = key
+        changed = False
+        if kind == "char":
+            if val.lower() in (b'q', b'\x1b'):    # Q or Escape
+                sys.exit(0)
+            elif val.lower() == b'f':              # F = jump to bottom
+                state.jump_bottom(); changed = True
+        elif kind == "ext":
+            if val == PGUP:
+                state.scroll_up();   changed = True
+            elif val == PGDN:
+                state.scroll_down(); changed = True
+            elif val == HOME:
+                state.jump_top();    changed = True
+            elif val == END:
+                state.jump_bottom(); changed = True
+        if changed:
+            refresh_all(layout, live, body_height_ref[0])
+
+
+async def tick(layout: Layout, live: Live, body_height_ref: list):
+    """Update the header clock every second (even when no events arrive)."""
+    while True:
+        await asyncio.sleep(1)
+        layout["header"].update(render_header())
+        live.refresh()
+
 
 async def main():
-    layout = build_layout()
+    layout      = build_layout()
+    # body_height is dynamic; we approximate 80% of console height
+    body_height = [console.height - 6]
+
     layout["header"].update(render_header())
-    layout["log"].update(render_log())
+    layout["log"].update(render_log(body_height[0]))
     layout["sidebar"].update(render_sidebar())
     layout["footer"].update(render_footer())
 
     with Live(layout, screen=True, refresh_per_second=4) as live:
+        # Recalculate body height each tick
+        async def height_watcher():
+            while True:
+                body_height[0] = console.height - 6
+                await asyncio.sleep(1)
+
         await asyncio.gather(
-            receive_events(layout, live),
-            keyboard_listener(),
+            receive_events(layout, live, body_height),
+            keyboard_listener(layout, live, body_height),
+            tick(layout, live, body_height),
+            height_watcher(),
         )
 
+
 if __name__ == "__main__":
-    console.print("[bold cyan]Tabula Rasa Monitor — connecting to agent...[/bold cyan]")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
+        pass
+    finally:
         console.print("\n[dim]Monitor closed.[/dim]")
