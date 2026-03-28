@@ -11,7 +11,8 @@ services:
       - ./agent:/app/agent
       - ./config.yaml:/app/config.yaml:ro
     ports:
-      - "8765:8765"
+      - "8765:8765"   # Chat
+      - "8766:8766"   # Monitor (real-time event stream)
     environment:
       - PYTHONUNBUFFERED=1
       - MOLTBOOK_API_KEY=${MOLTBOOK_API_KEY}
