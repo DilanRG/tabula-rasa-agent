@@ -167,6 +167,7 @@ class TabulaRasaAgent:
         print("Chat client connected.")
         await bus.emit(EVT_STATUS, {"message": "Chat client connected"})
         self.autonomous_paused = True
+        chat_history = []
         try:
             async for raw in websocket:
                 data = json.loads(raw)
@@ -176,19 +177,22 @@ class TabulaRasaAgent:
 
                 journal_tool = self.tools["journal"]
                 recent_journal = await journal_tool.execute(action="read_today")
+                
+                chat_history.append({"role": "user", "content": user_text})
 
                 messages = [
-                    {"role": "system", "content": self._build_identity()},
-                    {"role": "user",   "content": (
-                        f"Journal Context:\n{recent_journal}\n\n"
-                        f"The user is talking to you directly. You can use your tools "
-                        f"if it helps answer them.\n\nUser: {user_text}"
+                    {"role": "system", "content": self._build_identity() + (
+                        f"\n\nHere is your recent journal context (which YOU wrote during autonomous cycles):\n"
+                        f"{recent_journal}\n\n"
+                        f"Remember, you are chatting directly with the user now. Do not confuse your journal entries with the user's messages."
                     )},
+                    *chat_history
                 ]
 
                 try:
                     final = await self._agentic_loop(messages, label="chat")
                     if final:
+                        chat_history.append({"role": "assistant", "content": final})
                         # Simulate streaming word-by-word
                         for word in final.split(" "):
                             await websocket.send(json.dumps({"type": "token", "content": word + " "}))
