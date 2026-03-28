@@ -20,20 +20,18 @@ class EventBus:
             self._subscribers.remove(ws)
 
     async def emit(self, event_type: str, data: Dict[str, Any]):
-        """Emit an event to all connected monitor clients."""
+        """Emit an event to all connected monitor clients immediately."""
         event = {
             "ts": datetime.now().strftime("%H:%M:%S"),
             "type": event_type,
             **data
         }
-        dead = []
-        for ws in self._subscribers:
+        payload = json.dumps(event)
+        for ws in list(self._subscribers):
             try:
-                await ws.send(json.dumps(event))
+                await asyncio.wait_for(ws.send(payload), timeout=2.0)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.unsubscribe(ws)
+                self.unsubscribe(ws)
 
 # Event type constants
 EVT_CYCLE_START     = "cycle_start"

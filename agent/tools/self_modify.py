@@ -34,15 +34,7 @@ class SelfModifyTool(Tool):
         }
 
     async def execute(self, action: str, filepath: str = "", content: str = "") -> str:
-        # Restriction: Only allow modifications inside the /app/agent directory
-        # Inside the container, the code is in /app/agent.
-        # But we mount c:\random scripting\Agent to /app.
-        
         allowed_dir = "/app/agent"
-        target_path = os.path.normpath(os.path.join("/app", filepath))
-
-        if not (target_path + os.sep).startswith(allowed_dir + os.sep):
-            return "Error: Security violation. You can only modify files inside the 'agent/' folder."
 
         if action == "list":
             files = []
@@ -51,13 +43,18 @@ class SelfModifyTool(Tool):
                     files.append(os.path.relpath(os.path.join(root, f), "/app"))
             return "\n".join(files)
 
-        elif action == "read":
+        # Security check for read/write — must be inside agent/ folder
+        target_path = os.path.normpath(os.path.join("/app", filepath))
+        if not (target_path + os.sep).startswith(allowed_dir + os.sep):
+            return "Error: Security violation. You can only modify files inside the 'agent/' folder."
+
+        if action == "read":
             if not os.path.exists(target_path):
                 return "Error: File does not exist."
             with open(target_path, "r") as f:
                 return f.read()
 
-        elif action == "write":
+        if action == "write":
             if "config.yaml" in target_path or "Dockerfile" in target_path or ".env" in target_path:
                 return "Error: Security violation. You cannot modify configuration or container system files."
 

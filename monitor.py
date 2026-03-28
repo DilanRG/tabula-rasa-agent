@@ -69,6 +69,10 @@ class MonitorState:
         self.scroll_offset: int = 0   # 0 = auto-tail; > 0 = lines from bottom
         self.auto_tail: bool = True
         self.connected: bool = False
+        self.last_heartbeat: str = ""
+        self.agent_uptime: str = "–"
+        self.agent_idle: str = "–"
+        self.agent_paused: bool = False
         self.stats = {
             "cycles":      0,
             "tool_calls":  0,
@@ -193,8 +197,10 @@ def render_header() -> Panel:
     conn   = "[bold green]● LIVE[/]" if state.connected else "[bold red]○ DISCONNECTED[/]"
     tail   = "[dim](auto-tail)[/]" if state.auto_tail else f"[dim](scroll -{state.scroll_offset})[/]"
     now    = datetime.now().strftime("%H:%M:%S")
+    uptime = f"[dim]up {state.agent_uptime}[/dim]" if state.agent_uptime != "–" else ""
+    paused = "  [bold yellow]⏸ CHAT[/]" if state.agent_paused else ""
     return Panel(
-        f"[bold]Tabula Rasa — Agent Monitor[/bold]   {conn}  {tail}   [dim]{now}[/dim]",
+        f"[bold]Tabula Rasa — Agent Monitor[/bold]   {conn}{paused}  {tail}   {uptime}   [dim]{now}[/dim]",
         style="bold cyan",
         box=box.HORIZONTALS,
     )
@@ -229,6 +235,9 @@ def render_sidebar() -> Panel:
         ("Last tool",   state.stats["last_tool"]),
         ("Last action", state.stats["last_action"]),
         ("",            ""),
+        ("Uptime",      state.agent_uptime),
+        ("Idle (min)",  state.agent_idle),
+        ("Heartbeat",   state.last_heartbeat or "–"),
         ("History",     str(len(state.log))),
     ]
     for label, value in rows:
@@ -246,7 +255,13 @@ def render_footer() -> Panel:
 
 def update_stats(evt: dict):
     etype = evt.get("type")
-    if etype == "cycle_start":
+    if etype == "heartbeat":
+        state.last_heartbeat = datetime.now().strftime("%H:%M:%S")
+        state.agent_uptime = evt.get("uptime", "–")
+        state.agent_idle = str(evt.get("idle_min", "–"))
+        state.agent_paused = evt.get("paused", False)
+        return  # Don't log heartbeats to the event stream
+    elif etype == "cycle_start":
         state.stats["cycles"] += 1
         state.stats["last_action"] = "Running cycle"
     elif etype == "tool_call":
@@ -277,14 +292,15 @@ async def receive_events(layout: Layout, live: Live, body_height_ref: list):
                 state.log.append(Text("── Connected to agent monitor ──", style="bold green"))
                 async for raw in ws:
                     evt = json.loads(raw)
-                    state.log.append(format_event(evt))
                     update_stats(evt)
+                    if evt.get("type") != "heartbeat":
+                        state.log.append(format_event(evt))
                     refresh_all(layout, live, body_height_ref[0])
         except Exception as e:
             state.connected = False
-            state.log.append(Text(f"── {type(e).__name__}: {e} — reconnecting in 3s ──", style="bold red"))
+            state.log.append(Text(f"── {type(e).__name__}: {e} — reconnecting in 1s ──", style="bold red"))
             refresh_all(layout, live, body_height_ref[0])
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
 
 async def keyboard_listener(layout: Layout, live: Live, body_height_ref: list):
