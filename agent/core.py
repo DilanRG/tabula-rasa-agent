@@ -217,11 +217,15 @@ class TabulaRasaAgent:
             self.handle_chat,
             self.config["chat"]["host"],
             self.config["chat"]["port"],
+            ping_interval=20,
+            ping_timeout=None,   # don't drop during long LLM calls
         )
         monitor_server = await websockets.serve(
             self.handle_monitor,
             self.config["chat"]["host"],
             8766,
+            ping_interval=20,
+            ping_timeout=None,
         )
         print(f"Chat    server: ws://0.0.0.0:{self.config['chat']['port']}")
         print(f"Monitor server: ws://0.0.0.0:8766")

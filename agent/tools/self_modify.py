@@ -58,14 +58,15 @@ class SelfModifyTool(Tool):
                 return f.read()
 
         elif action == "write":
-            # Safety: basic check to prevent writing to config or Dockerfile if they somehow bypass the path check
             if "config.yaml" in target_path or "Dockerfile" in target_path or ".env" in target_path:
                 return "Error: Security violation. You cannot modify configuration or container system files."
-            
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
+            parent = os.path.dirname(target_path)
+            if parent:                                   # only makedirs when there IS a parent dir
+                os.makedirs(parent, exist_ok=True)
             with open(target_path, "w") as f:
                 f.write(content)
-            
-            return f"Successfully updated {filepath}. Changes will take effect on next restart."
+
+            return f"Successfully wrote {filepath}. Call 'reboot' to apply changes."
 
         return "Invalid action."
