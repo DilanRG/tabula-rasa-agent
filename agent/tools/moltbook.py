@@ -102,7 +102,7 @@ class MoltbookTool(Tool):
             return "Error: MOLTBOOK_API_KEY environment variable not set."
 
         try:
-            async with httpx.AsyncClient(follow_redirects=False) as client:
+            async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
 
                 # ── home ──────────────────────────────────────────────────────
                 if action == "home":
@@ -254,5 +254,7 @@ class MoltbookTool(Tool):
                 else:
                     return f"Error: Unknown action '{action}'."
 
+        except httpx.TimeoutException:
+            return f"Moltbook error: Request timed out. The server may be slow or down."
         except Exception as e:
-            return f"Moltbook error: {str(e)}"
+            return f"Moltbook error: {type(e).__name__}: {str(e) or 'no details'}"

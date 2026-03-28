@@ -1,37 +1,87 @@
 """
 Event bus for the Tabula Rasa agent.
 Emits structured events to connected monitor clients over a dedicated WebSocket.
+
+Uses per-subscriber asyncio.Queue to decouple event production from WebSocket
+send speed.  If a monitor falls behind, its queue is bounded — oldest events
+are silently dropped so the agent loop never blocks.
 """
 import asyncio
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Set
 import websockets
+
+
+MAX_QUEUE = 256          # per-subscriber queue depth before dropping
+
+
+class _Sub:
+    """Wraps a WebSocket subscriber with a bounded send queue and drain task."""
+    __slots__ = ("ws", "queue", "task")
+
+    def __init__(self, ws, loop: asyncio.AbstractEventLoop):
+        self.ws = ws
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE)
+        self.task = loop.create_task(self._drain())
+
+    async def _drain(self):
+        try:
+            while True:
+                payload = await self.queue.get()
+                await asyncio.wait_for(self.ws.send(payload), timeout=1.0)
+        except Exception:
+            pass  # subscriber gone — EventBus will clean up
+
+    def enqueue(self, payload: str):
+        try:
+            self.queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Drop oldest event to make room
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass
+
+    def close(self):
+        self.task.cancel()
+
 
 class EventBus:
     def __init__(self):
-        self._subscribers: List[websockets.WebSocketServerProtocol] = []
+        self._subs: Set[_Sub] = set()
 
     def subscribe(self, ws):
-        self._subscribers.append(ws)
+        loop = asyncio.get_event_loop()
+        self._subs.add(_Sub(ws, loop))
 
     def unsubscribe(self, ws):
-        if ws in self._subscribers:
-            self._subscribers.remove(ws)
+        to_remove = [s for s in self._subs if s.ws is ws]
+        for s in to_remove:
+            s.close()
+            self._subs.discard(s)
 
     async def emit(self, event_type: str, data: Dict[str, Any]):
-        """Emit an event to all connected monitor clients immediately."""
+        """Enqueue an event to all subscribers — never blocks the caller."""
         event = {
             "ts": datetime.now().strftime("%H:%M:%S"),
             "type": event_type,
-            **data
+            **data,
         }
         payload = json.dumps(event)
-        for ws in list(self._subscribers):
-            try:
-                await asyncio.wait_for(ws.send(payload), timeout=2.0)
-            except Exception:
-                self.unsubscribe(ws)
+        dead = []
+        for sub in self._subs:
+            if sub.task.done():
+                dead.append(sub)
+            else:
+                sub.enqueue(payload)
+        for sub in dead:
+            sub.close()
+            self._subs.discard(sub)
 
 # Event type constants
 EVT_CYCLE_START     = "cycle_start"
