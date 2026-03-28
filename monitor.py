@@ -73,6 +73,8 @@ class MonitorState:
         self.agent_uptime: str = "–"
         self.agent_idle: str = "–"
         self.agent_paused: bool = False
+        self.agent_sleeping: bool = False
+        self.agent_sleep_remaining: str = "–"
         self.stats = {
             "cycles":      0,
             "tool_calls":  0,
@@ -198,7 +200,12 @@ def render_header() -> Panel:
     tail   = "[dim](auto-tail)[/]" if state.auto_tail else f"[dim](scroll -{state.scroll_offset})[/]"
     now    = datetime.now().strftime("%H:%M:%S")
     uptime = f"[dim]up {state.agent_uptime}[/dim]" if state.agent_uptime != "–" else ""
-    paused = "  [bold yellow]⏸ CHAT[/]" if state.agent_paused else ""
+    if state.agent_sleeping:
+        paused = f"  [bold magenta]💤 SLEEPING ({state.agent_sleep_remaining})[/]"
+    elif state.agent_paused:
+        paused = "  [bold yellow]⏸ CHAT[/]"
+    else:
+        paused = ""
     return Panel(
         f"[bold]Tabula Rasa — Agent Monitor[/bold]   {conn}{paused}  {tail}   {uptime}   [dim]{now}[/dim]",
         style="bold cyan",
@@ -237,6 +244,7 @@ def render_sidebar() -> Panel:
         ("",            ""),
         ("Uptime",      state.agent_uptime),
         ("Idle (min)",  state.agent_idle),
+        ("Sleep",       state.agent_sleep_remaining if state.agent_sleeping else "awake"),
         ("Heartbeat",   state.last_heartbeat or "–"),
         ("History",     str(len(state.log))),
     ]
@@ -260,6 +268,9 @@ def update_stats(evt: dict):
         state.agent_uptime = evt.get("uptime", "–")
         state.agent_idle = str(evt.get("idle_min", "–"))
         state.agent_paused = evt.get("paused", False)
+        state.agent_sleeping = evt.get("sleeping", False)
+        sleep_rem = evt.get("sleep_remaining_min")
+        state.agent_sleep_remaining = f"{sleep_rem}m" if sleep_rem is not None else "–"
         return  # Don't log heartbeats to the event stream
     elif etype == "cycle_start":
         state.stats["cycles"] += 1

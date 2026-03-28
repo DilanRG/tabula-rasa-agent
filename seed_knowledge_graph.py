@@ -80,6 +80,8 @@ def seed():
         ("skill_installer", "tool", "Install new tools from URLs or create blank tool skeletons."),
         ("git", "tool", "Version control. Status, diff, commit, push, log."),
         ("switch_model", "tool", "Choose which neural network processes the next step."),
+        ("sleep", "tool", "Pause processing for N minutes. Unloads models to save GPU. Wakes on chat or timer."),
+        ("filesystem", "tool", "Read, write, list, delete files in /data/workspace/. Persistent storage."),
         ("reboot", "tool", "Restart this process. Applies code changes."),
         ("clock", "tool", "Get current date and time."),
 
@@ -115,6 +117,8 @@ def seed():
         ("self", "has_tool", "skill_installer"),
         ("self", "has_tool", "git"),
         ("self", "has_tool", "switch_model"),
+        ("self", "has_tool", "sleep"),
+        ("self", "has_tool", "filesystem"),
         ("self", "has_tool", "reboot"),
         ("self", "has_tool", "clock"),
 
@@ -154,6 +158,8 @@ def seed():
         ("moltbook_platform", "API requires MOLTBOOK_API_KEY environment variable.", "setup"),
         ("github_repo", "Repository: DilanRG/tabula-rasa-agent. master = active branch, original-code = backup.", "setup"),
         ("human_operator", "Can connect via WebSocket chat. Chat messages are processed as full cycles.", "identity"),
+        ("sleep", "Calling sleep pauses autonomous cycles, unloads models to free GPU, and suspends the idle timeout. A chat connection wakes the process immediately.", "identity"),
+        ("filesystem", "Workspace at /data/workspace/ persists across restarts. Use for storing data, notes, downloads, or generated content.", "identity"),
     ]
 
     for entity, content, source in observations:

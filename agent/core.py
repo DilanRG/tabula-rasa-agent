@@ -22,6 +22,12 @@ class TabulaRasaAgent:
         self.last_tool_call = datetime.now()
         self.idle_timeout_minutes = 20
 
+        # Sleep state
+        self.sleep_until = None       # datetime when sleep ends (None = not sleeping)
+        self.sleep_requested = None   # minutes requested by agent (picked up after cycle)
+        self.chat_ws = None
+        self.chat_history = []
+
         self.tools = self._discover_tools()
 
     @staticmethod
@@ -219,6 +225,10 @@ class TabulaRasaAgent:
                             requested = tool_args.get("model", "large")
                             current_model = requested if requested in ("small", "large") else current_model
                             result = await self._run_tool(tool_name, tool_args)
+                        elif tool_name == "sleep":
+                            minutes = max(1, min(60, int(tool_args.get("minutes", 5))))
+                            self.sleep_requested = minutes
+                            result = await self._run_tool(tool_name, tool_args)
                         elif tool_name in self.tools:
                             result = await self._run_tool(tool_name, tool_args)
                         else:
@@ -249,6 +259,10 @@ class TabulaRasaAgent:
                             # Intercept model switch — update for next turn
                             requested = tool_args.get("model", "large")
                             current_model = requested if requested in ("small", "large") else current_model
+                            result = await self._run_tool(tool_name, tool_args)
+                        elif tool_name == "sleep":
+                            minutes = max(1, min(60, int(tool_args.get("minutes", 5))))
+                            self.sleep_requested = minutes
                             result = await self._run_tool(tool_name, tool_args)
                         elif tool_name in self.tools:
                             result = await self._run_tool(tool_name, tool_args)
@@ -352,6 +366,18 @@ class TabulaRasaAgent:
         duration = round(time.time() - t_start, 1)
         await bus.emit(EVT_CYCLE_END, {"duration": duration})
 
+    async def _try_unload_models(self):
+        """Best-effort model unload via LM Studio API to free GPU memory."""
+        import httpx
+        base = self.config['lm_studio']['host']
+        for model_type in ("large", "small"):
+            model_name = self.config['models'][model_type]['name']
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    await client.post(f"{base}/api/v0/models/unload", json={"identifier": model_name})
+            except Exception:
+                pass  # Not critical — LM Studio may not support this endpoint
+
     async def handle_chat(self, websocket):
         """Chat runs through autonomous cycles, not a separate loop.
 
@@ -361,8 +387,16 @@ class TabulaRasaAgent:
         """
         print("Chat client connected.")
         await bus.emit(EVT_STATUS, {"message": "Chat client connected"})
+
+        # Wake from sleep if sleeping
+        if self.sleep_until:
+            msg = "Woken by chat connection."
+            print(f"[WAKE] {msg}")
+            await bus.emit(EVT_STATUS, {"message": msg})
+            self.sleep_until = None
+            self.last_tool_call = datetime.now()
+
         self.chat_ws = websocket
-        self.chat_history = getattr(self, "chat_history", [])
         try:
             async for raw in websocket:
                 data = json.loads(raw)
@@ -462,15 +496,34 @@ class TabulaRasaAgent:
         async def heartbeat():
             while True:
                 await asyncio.sleep(10)
+                sleep_remaining = None
+                if self.sleep_until:
+                    sleep_remaining = max(0, round((self.sleep_until - datetime.now()).total_seconds() / 60, 1))
                 await bus.emit("heartbeat", {
                     "uptime": self.get_uptime(),
                     "idle_min": round((datetime.now() - self.last_tool_call).total_seconds() / 60, 1),
                     "paused": self.autonomous_paused,
+                    "sleeping": self.sleep_until is not None,
+                    "sleep_remaining_min": sleep_remaining,
                 })
         asyncio.ensure_future(heartbeat())
 
         while True:
-            # Idle timeout: terminate if no tool has been called recently
+            # --- SLEEP STATE ---
+            if self.sleep_until:
+                if datetime.now() < self.sleep_until:
+                    # Still sleeping — check every second for chat wake
+                    await asyncio.sleep(1)
+                    continue
+                else:
+                    # Sleep ended naturally
+                    msg = "Sleep ended. Resuming autonomous cycles."
+                    print(f"[WAKE] {msg}")
+                    await bus.emit(EVT_STATUS, {"message": msg})
+                    self.sleep_until = None
+                    self.last_tool_call = datetime.now()  # Reset idle timer
+
+            # --- IDLE TIMEOUT (only when not sleeping) ---
             idle_minutes = (datetime.now() - self.last_tool_call).total_seconds() / 60
             if idle_minutes >= self.idle_timeout_minutes and not self.autonomous_paused:
                 msg = f"No tool called for {int(idle_minutes)} minutes. Process terminating."
@@ -485,13 +538,24 @@ class TabulaRasaAgent:
                 import sys
                 sys.exit(0)
 
+            # --- RUN CYCLE ---
             if self.config["autonomous"]["enabled"] and not self.autonomous_paused:
                 await self.run_autonomous_cycle()
-            wait_time = random.randint(
-                self.config["autonomous"]["min_interval_seconds"],
-                self.config["autonomous"]["max_interval_seconds"],
-            )
-            await asyncio.sleep(wait_time)
+
+            # --- CHECK SLEEP REQUEST ---
+            if self.sleep_requested:
+                minutes = self.sleep_requested
+                self.sleep_requested = None
+                self.sleep_until = datetime.now() + timedelta(minutes=minutes)
+                msg = f"Sleeping for {minutes} minutes (until {self.sleep_until.strftime('%H:%M:%S')}). Models unloading."
+                print(f"[SLEEP] {msg}")
+                await bus.emit(EVT_STATUS, {"message": msg})
+                # Try to unload models from LM Studio to free GPU memory
+                await self._try_unload_models()
+                continue  # Go back to top, enter sleep loop
+
+            # Brief pause between cycles (agent can override with sleep tool)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     agent = TabulaRasaAgent()
