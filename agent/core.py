@@ -11,15 +11,6 @@ from agent.events import bus, EVT_CYCLE_START, EVT_CYCLE_END, EVT_MODEL_CALL, \
     EVT_MODEL_RESPONSE, EVT_TOOL_CALL, EVT_TOOL_RESULT, EVT_JOURNAL_WRITE, \
     EVT_CHAT_IN, EVT_CHAT_OUT, EVT_ERROR, EVT_STATUS, EVT_THINK
 
-# Import tools
-from agent.tools.journal import JournalTool
-from agent.tools.web_search import WebSearchTool
-from agent.tools.web_read import WebReadTool
-from agent.tools.clock import ClockTool
-from agent.tools.self_modify import SelfModifyTool
-from agent.tools.git import GitTool
-from agent.tools.moltbook import MoltbookTool
-from agent.tools.reboot import RebootTool
 
 class TabulaRasaAgent:
     def __init__(self):
@@ -29,16 +20,39 @@ class TabulaRasaAgent:
         self.autonomous_paused = False
         self.last_moltbook_check = None
 
-        self.tools = {
-            "journal":     JournalTool(),
-            "web_search":  WebSearchTool(),
-            "web_read":    WebReadTool(),
-            "clock":       ClockTool(),
-            "self_modify": SelfModifyTool(),
-            "git":         GitTool(),
-            "moltbook":    MoltbookTool(),
-            "reboot":      RebootTool(),
-        }
+        self.tools = self._discover_tools()
+
+    @staticmethod
+    def _discover_tools():
+        import importlib
+        import inspect
+        from agent.tools.base import Tool
+
+        tools = {}
+        tools_dir = os.path.join(os.path.dirname(__file__), "tools")
+
+        for filename in os.listdir(tools_dir):
+            if not filename.endswith(".py") or filename in ("__init__.py", "base.py"):
+                continue
+            module_name = filename[:-3]
+            try:
+                module = importlib.import_module(f"agent.tools.{module_name}")
+                for attr_name in dir(module):
+                    attr = getattr(module, attr_name)
+                    if (inspect.isclass(attr)
+                            and issubclass(attr, Tool)
+                            and attr is not Tool):
+                        instance = attr()
+                        tools[instance.name] = instance
+            except Exception as e:
+                print(f"[WARN] Failed to load tool from {filename}: {e}")
+
+        print(f"Discovered {len(tools)} tools: {', '.join(sorted(tools.keys()))}")
+        return tools
+
+    def reload_tools(self):
+        self.tools = self._discover_tools()
+        print(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
 
     def get_uptime(self) -> str:
         delta = datetime.now() - self.start_time
