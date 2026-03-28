@@ -55,7 +55,7 @@ class TabulaRasaAgent:
         
         try:
             # Using Large model for autonomous decisions as per plan
-            response = await self.llm.chat(messages, model_type="large")
+            response = await self.llm.chat(messages, model_type="large", tools=openai_tools)
             msg = response.choices[0].message
             
             if msg.tool_calls:
@@ -96,8 +96,15 @@ class TabulaRasaAgent:
             journal_tool = self.tools['journal']
             recent_journal = await journal_tool.execute(action="read_today")
             
+            tool_descriptions = "\n".join([f"- {name}: {t.description}" for name, t in self.tools.items()])
+            chat_context = (
+                f"You are currently chatting with the user. You cannot execute tools right now, "
+                f"but during your autonomous cycle, you have full access to these tools:\n{tool_descriptions}\n\n"
+                f"Explain that you use these tools when you are alone, but right now you are just conversing."
+            )
+            
             messages = [
-                {"role": "system", "content": get_identity_prompt(self.get_uptime())},
+                {"role": "system", "content": get_identity_prompt(self.get_uptime()) + "\n\n" + chat_context},
                 {"role": "user", "content": f"Journal Context:\n{recent_journal}\n\nUser: {user_text}"}
             ]
             
