@@ -56,7 +56,10 @@ class JournalTool(Tool):
             if not os.path.exists(file_path):
                 return "No entries for today yet."
             with open(file_path, "r") as f:
-                return f.read()
+                content = f.read()
+                if len(content) > 10000:
+                    return "...[EARLIER ENTRIES TRUNCATED]...\n" + content[-10000:]
+                return content
         
         elif action == "read_date":
             path = f"{base_path}/{date}.md"

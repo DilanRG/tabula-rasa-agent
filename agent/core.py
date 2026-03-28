@@ -14,6 +14,7 @@ from agent.tools.clock import ClockTool
 from agent.tools.self_modify import SelfModifyTool
 from agent.tools.git import GitTool
 from agent.tools.moltbook import MoltbookTool
+from agent.tools.reboot import RebootTool
 
 class TabulaRasaAgent:
     def __init__(self):
@@ -30,7 +31,8 @@ class TabulaRasaAgent:
             "clock": ClockTool(),
             "self_modify": SelfModifyTool(),
             "git": GitTool(),
-            "moltbook": MoltbookTool()
+            "moltbook": MoltbookTool(),
+            "reboot": RebootTool()
         }
 
     def get_uptime(self) -> str:
@@ -74,7 +76,12 @@ class TabulaRasaAgent:
                     await journal_tool.execute(action="write", content=f"Self-reflection: {content}")
 
         except Exception as e:
-            print(f"Cycle error: {str(e)}")
+            err_msg = f"Cycle error: {str(e)}"
+            print(err_msg)
+            try:
+                await journal_tool.execute(action="write", content=f"System Error in autonomous cycle: {err_msg}")
+            except:
+                pass
 
     async def handle_chat(self, websocket):
         print("New chat client connected.")
