@@ -4,7 +4,7 @@ import json
 import random
 import asyncio
 import websockets
-from datetime import datetime
+from datetime import datetime, timedelta
 from agent.llm import LLMManager, load_config
 from agent.identity import get_identity_prompt
 from agent.events import bus, EVT_CYCLE_START, EVT_CYCLE_END, EVT_MODEL_CALL, \
@@ -27,6 +27,7 @@ class TabulaRasaAgent:
         self.llm = LLMManager(self.config)
         self.start_time = datetime.now()
         self.autonomous_paused = False
+        self.last_moltbook_check = None
 
         self.tools = {
             "journal":     JournalTool(),
@@ -187,12 +188,24 @@ class TabulaRasaAgent:
         journal_tool = self.tools["journal"]
         recent_journal = await journal_tool.execute(action="read_today")
 
+        moltbook_context = ""
+        if os.environ.get("MOLTBOOK_API_KEY"):
+            now = datetime.now()
+            if self.last_moltbook_check is None or (now - self.last_moltbook_check) > timedelta(minutes=30):
+                try:
+                    moltbook_home = await self.tools["moltbook"].execute(action="home")
+                    moltbook_context = f"\n\nMoltbook Dashboard (check-in):\n{moltbook_home}\n"
+                    self.last_moltbook_check = now
+                except Exception:
+                    pass
+
         messages = [
             {"role": "system", "content": self._build_identity()},
             {"role": "user",   "content": (
                 f"Recent Journal:\n{recent_journal}\n\n"
                 "What would you like to do? You have full access to your tools. "
                 "Use them if you want to, or simply think and write a journal entry."
+                + moltbook_context
             )},
         ]
 
