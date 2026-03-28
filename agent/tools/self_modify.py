@@ -1,0 +1,71 @@
+import os
+from agent.tools.base import Tool
+from typing import Any, Dict
+
+class SelfModifyTool(Tool):
+    @property
+    def name(self) -> str:
+        return "self_modify"
+
+    @property
+    def description(self) -> str:
+        return "Analyze, read, or modify your own source code to improve your capabilities."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "Enum": ["read", "list", "write"],
+                    "description": "The action to perform."
+                },
+                "filepath": {
+                    "type": "string",
+                    "description": "Relative path to the source file (e.g., 'agent/tools/new_tool.py')."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The new content for the file (for 'write' action)."
+                }
+            },
+            "required": ["action"]
+        }
+
+    async def execute(self, action: str, filepath: str = "", content: str = "") -> str:
+        # Restriction: Only allow modifications inside the /app/agent directory
+        # Inside the container, the code is in /app/agent.
+        # But we mount c:\random scripting\Agent to /app.
+        
+        allowed_dir = "/app/agent"
+        target_path = os.path.normpath(os.path.join("/app", filepath))
+
+        if not target_path.startswith(allowed_dir):
+            return "Error: Security violation. You can only modify files inside the 'agent/' folder."
+
+        if action == "list":
+            files = []
+            for root, dirs, filenames in os.walk(allowed_dir):
+                for f in filenames:
+                    files.append(os.path.relpath(os.path.join(root, f), "/app"))
+            return "\n".join(files)
+
+        elif action == "read":
+            if not os.path.exists(target_path):
+                return "Error: File does not exist."
+            with open(target_path, "r") as f:
+                return f.read()
+
+        elif action == "write":
+            # Safety: basic check to prevent writing to config or Dockerfile if they somehow bypass the path check
+            if "config.yaml" in target_path or "Dockerfile" in target_path or ".env" in target_path:
+                return "Error: Security violation. You cannot modify configuration or container system files."
+            
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "w") as f:
+                f.write(content)
+            
+            return f"Successfully updated {filepath}. Changes will take effect on next restart."
+
+        return "Invalid action."

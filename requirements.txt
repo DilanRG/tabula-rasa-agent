@@ -1,0 +1,10 @@
+openai
+asyncio
+pyyaml
+websockets
+rich
+duckduckgo_search
+trafilatura
+httpx
+python-dotenv
+gitpython

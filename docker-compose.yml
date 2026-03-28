@@ -1,0 +1,30 @@
+services:
+  agent:
+    build: .
+    container_name: tabula_rasa_agent
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./data/journal:/data/journal
+      - ./agent:/app/agent
+      - ./config.yaml:/app/config.yaml:ro
+    ports:
+      - "8765:8765"
+    environment:
+      - MOLTBOOK_API_KEY=${MOLTBOOK_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - TWITTER_USERNAME=${TWITTER_USERNAME}
+      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
+      - TWITTER_EMAIL=${TWITTER_EMAIL}
+      - TWITTER_AUTH_TOKEN=${TWITTER_AUTH_TOKEN}
+      - TWITTER_CT0=${TWITTER_CT0}
+      - TWITTER_TWID=${TWITTER_TWID}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G

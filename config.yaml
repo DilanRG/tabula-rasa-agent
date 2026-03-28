@@ -1,0 +1,41 @@
+lm_studio:
+  host: "http://host.docker.internal:1234"
+  api_key: "not-needed"
+  
+models:
+  small:
+    name: "nvidia/nemotron-3-nano-4b"    # Fast, Tool-calling
+    keep_loaded: true
+    context_length: 32768
+  large:
+    name: "qwen/qwen3.5-9b"              # Reasoning, Vision, Code
+    keep_loaded: false                  # Loaded on-demand
+    context_length: 32768
+  
+sampling:
+  temperature: 1.0
+  top_p: 0.95
+  top_k: 20
+  presence_penalty: 1.5
+  max_tokens: 8192
+  
+autonomous:
+  enabled: true
+  min_interval_seconds: 30
+  max_interval_seconds: 300
+  
+moltbook:
+  api_base: "https://api.moltbook.com/api/v1"
+  
+github:
+  repo: "tabula-rasa-agent"
+  branch: "main"
+  backup_branch: "original-code"
+  
+journal:
+  path: "/data/journal"
+  max_context_entries: 20
+  
+chat:
+  host: "0.0.0.0"
+  port: 8765
