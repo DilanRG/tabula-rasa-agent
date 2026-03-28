@@ -17,7 +17,8 @@ async def chat():
         
         while True:
             try:
-                user_input = input("You: ")
+                # Use asyncio.to_thread to prevent input() from blocking the websocket heartbeat
+                user_input = await asyncio.to_thread(input, "You: ")
                 if not user_input: continue
                 
                 await websocket.send(json.dumps({"text": user_input}))

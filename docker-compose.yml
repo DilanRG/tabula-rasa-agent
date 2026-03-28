@@ -13,6 +13,7 @@ services:
     ports:
       - "8765:8765"
     environment:
+      - PYTHONUNBUFFERED=1
       - MOLTBOOK_API_KEY=${MOLTBOOK_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - TWITTER_USERNAME=${TWITTER_USERNAME}
