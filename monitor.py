@@ -317,7 +317,7 @@ async def keyboard_listener(layout: Layout, live: Live, body_height_ref: list):
         changed = False
         if kind == "char":
             if val.lower() in (b'q', b'\x1b'):    # Q or Escape
-                sys.exit(0)
+                raise KeyboardInterrupt
             elif val.lower() == b'f':              # F = jump to bottom
                 state.jump_bottom(); changed = True
         elif kind == "ext":

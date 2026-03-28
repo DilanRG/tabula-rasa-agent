@@ -19,6 +19,8 @@ class TabulaRasaAgent:
         self.start_time = datetime.now()
         self.autonomous_paused = False
         self.last_moltbook_check = None
+        self.last_tool_call = datetime.now()
+        self.idle_timeout_minutes = 20
 
         self.tools = self._discover_tools()
 
@@ -65,6 +67,7 @@ class TabulaRasaAgent:
         return get_identity_prompt(self.get_uptime(), tool_list)
 
     async def _run_tool(self, tool_name: str, tool_args: dict) -> str:
+        self.last_tool_call = datetime.now()
         await bus.emit(EVT_TOOL_CALL, {"tool": tool_name, "args": tool_args})
         print(f"  -> Tool: {tool_name}  args={tool_args}")
         try:
@@ -87,9 +90,11 @@ class TabulaRasaAgent:
         openai_tools = [t.to_openai_tool() for t in self.tools.values()]
         final_content = ""
         max_turns = 8
+        # Default model: large for cycles, small for chat. Agent can override via switch_model.
+        current_model = "large" if label == "cycle" else "small"
 
         for turn in range(max_turns):
-            model_type = "large" if label == "cycle" else "small"
+            model_type = current_model
             model_name = self.config["models"][model_type]["name"]
             ctx_estimate = sum(len(m.get("content") or "") for m in messages) // 4
 
@@ -149,7 +154,12 @@ class TabulaRasaAgent:
                 for tool_call in msg.tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
-                    if tool_name in self.tools:
+                    if tool_name == "switch_model":
+                        # Intercept model switch — update for next turn
+                        requested = tool_args.get("model", "large")
+                        current_model = requested if requested in ("small", "large") else current_model
+                        result = await self._run_tool(tool_name, tool_args)
+                    elif tool_name in self.tools:
                         result = await self._run_tool(tool_name, tool_args)
                     else:
                         result = f"Unknown tool: {tool_name}"
@@ -309,6 +319,21 @@ class TabulaRasaAgent:
         await bus.emit(EVT_STATUS, {"message": "Agent started"})
 
         while True:
+            # Idle timeout: terminate if no tool has been called recently
+            idle_minutes = (datetime.now() - self.last_tool_call).total_seconds() / 60
+            if idle_minutes >= self.idle_timeout_minutes and not self.autonomous_paused:
+                msg = f"No tool called for {int(idle_minutes)} minutes. Process terminating."
+                print(f"[IDLE] {msg}")
+                await bus.emit(EVT_STATUS, {"message": msg})
+                try:
+                    journal = self.tools.get("journal")
+                    if journal:
+                        await journal.execute(action="write", content=f"[SYSTEM] {msg}")
+                except Exception:
+                    pass
+                import sys
+                sys.exit(0)
+
             if self.config["autonomous"]["enabled"] and not self.autonomous_paused:
                 await self.run_autonomous_cycle()
             wait_time = random.randint(
