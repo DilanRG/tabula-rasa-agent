@@ -41,7 +41,6 @@ COLOURS = {
     "tool_call":      "bold yellow",
     "tool_result":    "yellow",
     "journal_write":  "magenta",
-    "kg_update":      "bright_magenta",
     "chat_in":        "bold white",
     "chat_out":       "green",
     "error":          "bold red",
@@ -56,7 +55,6 @@ ICONS = {
     "tool_call":      "🔧",
     "tool_result":    "📤",
     "journal_write":  "📓",
-    "kg_update":      "🕸 ",
     "chat_in":        "👤",
     "chat_out":       "🤖",
     "error":          "❌",
@@ -159,8 +157,6 @@ def format_event(evt: dict) -> Text:
         snippet = str(evt.get("snippet", ""))
         line.append("Journal ✍  ", style=colour)
         line.append(snippet[:120], style="dim white")
-    elif etype == "kg_update":
-        line.append(f"KG: {evt.get('subject')} → {evt.get('predicate')} → {evt.get('object')}", style=colour)
     elif etype == "chat_in":
         line.append("User: ", style=colour)
         line.append(str(evt.get("text", "")), style="bold white")

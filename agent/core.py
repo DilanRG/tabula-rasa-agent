@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import random
 import asyncio
 import websockets
 from datetime import datetime
@@ -60,8 +61,13 @@ class TabulaRasaAgent:
         print(f"  <- Result [{tool_name}]: {preview[:120]}")
         return result
 
-    async def _agentic_loop(self, messages: list, label: str = "agent") -> str:
-        """Multi-turn tool-calling loop: keep going until the LLM stops calling tools."""
+    async def _agentic_loop(self, messages: list, label: str = "agent",
+                             stream_ws=None) -> str:
+        """Multi-turn tool-calling loop: keep going until the LLM stops calling tools.
+
+        If stream_ws is provided, the final (non-tool) response is streamed
+        token-by-token over the WebSocket instead of returned as a batch.
+        """
         import re
         openai_tools = [t.to_openai_tool() for t in self.tools.values()]
         final_content = ""
@@ -78,7 +84,24 @@ class TabulaRasaAgent:
                 "turn": turn,
             })
 
-            response = await self.llm.chat(messages, model_type=model_type, tools=openai_tools)
+            # --- LLM call with error handling ---
+            try:
+                response = await self.llm.chat(messages, model_type=model_type, tools=openai_tools)
+            except Exception as exc:
+                err_msg = (
+                    f"LLM call failed on turn {turn} (model='{model_name}', "
+                    f"label='{label}'): {exc}"
+                )
+                print(f"  [ERROR] {err_msg}")
+                await bus.emit(EVT_ERROR, {
+                    "message": err_msg,
+                    "model": model_name,
+                    "model_type": model_type,
+                    "turn": turn,
+                    "label": label,
+                })
+                raise RuntimeError(err_msg) from exc
+
             msg = response.choices[0].message
 
             raw_content = msg.content or ""
@@ -121,7 +144,35 @@ class TabulaRasaAgent:
                         "content": str(result)[:4000],
                     })
             else:
-                final_content = raw_content
+                # Final response — stream it if a WebSocket is provided
+                if stream_ws and raw_content:
+                    try:
+                        stream = await self.llm.chat(
+                            messages, model_type=model_type, stream=True,
+                        )
+                        streamed = ""
+                        async for chunk in stream:
+                            delta = chunk.choices[0].delta.content or ""
+                            if delta:
+                                streamed += delta
+                                await stream_ws.send(json.dumps({
+                                    "type": "token", "content": delta,
+                                }))
+                        # Strip think blocks from streamed output
+                        if "<think>" in streamed:
+                            streamed = re.sub(
+                                r"<think>.*?</think>", "", streamed, flags=re.DOTALL
+                            ).strip()
+                        final_content = streamed
+                    except Exception:
+                        # Streaming failed — fall back to sending the batch response
+                        for word in raw_content.split(" "):
+                            await stream_ws.send(json.dumps({
+                                "type": "token", "content": word + " ",
+                            }))
+                        final_content = raw_content
+                else:
+                    final_content = raw_content
                 break
 
         return final_content
@@ -157,8 +208,9 @@ class TabulaRasaAgent:
             await bus.emit(EVT_ERROR, {"message": err})
             try:
                 await journal_tool.execute(action="write", content=f"System Error: {err}")
-            except:
+            except Exception:
                 pass
+            # Do NOT re-raise — let the outer main_loop continue to the next cycle.
 
         duration = round(time.time() - t_start, 1)
         await bus.emit(EVT_CYCLE_END, {"duration": duration})
@@ -177,7 +229,7 @@ class TabulaRasaAgent:
 
                 journal_tool = self.tools["journal"]
                 recent_journal = await journal_tool.execute(action="read_today")
-                
+
                 chat_history.append({"role": "user", "content": user_text})
 
                 messages = [
@@ -190,13 +242,11 @@ class TabulaRasaAgent:
                 ]
 
                 try:
-                    final = await self._agentic_loop(messages, label="chat")
+                    final = await self._agentic_loop(
+                        messages, label="chat", stream_ws=websocket,
+                    )
                     if final:
                         chat_history.append({"role": "assistant", "content": final})
-                        # Simulate streaming word-by-word
-                        for word in final.split(" "):
-                            await websocket.send(json.dumps({"type": "token", "content": word + " "}))
-                            await asyncio.sleep(0.01)
                         await bus.emit(EVT_CHAT_OUT, {"snippet": final[:120]})
                     await websocket.send(json.dumps({"type": "done"}))
                 except Exception as e:
@@ -238,7 +288,10 @@ class TabulaRasaAgent:
         while True:
             if self.config["autonomous"]["enabled"] and not self.autonomous_paused:
                 await self.run_autonomous_cycle()
-            wait_time = self.config["autonomous"]["min_interval_seconds"]
+            wait_time = random.randint(
+                self.config["autonomous"]["min_interval_seconds"],
+                self.config["autonomous"]["max_interval_seconds"],
+            )
             await asyncio.sleep(wait_time)
 
 if __name__ == "__main__":

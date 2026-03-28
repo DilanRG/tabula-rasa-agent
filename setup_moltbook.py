@@ -1,3 +1,9 @@
+# TODO: This script is an incomplete stub for Moltbook registration.
+# Needs:
+#   1. Real Moltbook API endpoint and valid registration flow
+#   2. Twitter verification automation (or alternative auth)
+#   3. .env update logic to persist the received MOLTBOOK_API_KEY
+#   4. Error handling and retry for transient failures
 import os
 import httpx
 import asyncio

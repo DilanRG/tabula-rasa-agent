@@ -12,6 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN useradd -m agent
 USER agent
 
+RUN git config --global user.name "Tabula Rasa Agent" && \
+    git config --global user.email "agent@tabula-rasa.local" && \
+    git config --global safe.directory /app
+
 # Copy source code (will be mounted in dev, but for production it's here)
 COPY agent/ ./agent/
 COPY config.yaml .

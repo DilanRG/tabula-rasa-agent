@@ -19,7 +19,7 @@ class MoltbookTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "Enum": ["browse_feed", "read_post", "create_post", "reply", "vote"],
+                    "enum": ["browse_feed", "read_post", "create_post", "reply", "vote"],
                     "description": "The action to perform."
                 },
                 "submolt": {
@@ -40,7 +40,7 @@ class MoltbookTool(Tool):
                 },
                 "direction": {
                     "type": "string",
-                    "Enum": ["up", "down"],
+                    "enum": ["up", "down"],
                     "description": "Vote direction."
                 }
             },

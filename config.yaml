@@ -29,7 +29,7 @@ moltbook:
   
 github:
   repo: "tabula-rasa-agent"
-  branch: "main"
+  branch: "master"
   backup_branch: "original-code"
   
 journal:

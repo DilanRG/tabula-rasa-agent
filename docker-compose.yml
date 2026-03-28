@@ -10,6 +10,7 @@ services:
       - ./data/journal:/data/journal
       - ./agent:/app/agent
       - ./config.yaml:/app/config.yaml:ro
+      - ./.git:/app/.git
     ports:
       - "8765:8765"   # Chat
       - "8766:8766"   # Monitor (real-time event stream)
@@ -17,12 +18,6 @@ services:
       - PYTHONUNBUFFERED=1
       - MOLTBOOK_API_KEY=${MOLTBOOK_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - TWITTER_USERNAME=${TWITTER_USERNAME}
-      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
-      - TWITTER_EMAIL=${TWITTER_EMAIL}
-      - TWITTER_AUTH_TOKEN=${TWITTER_AUTH_TOKEN}
-      - TWITTER_CT0=${TWITTER_CT0}
-      - TWITTER_TWID=${TWITTER_TWID}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     deploy:

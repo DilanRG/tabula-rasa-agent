@@ -18,7 +18,7 @@ class SelfModifyTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "Enum": ["read", "list", "write"],
+                    "enum": ["read", "list", "write"],
                     "description": "The action to perform."
                 },
                 "filepath": {

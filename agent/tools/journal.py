@@ -19,7 +19,7 @@ class JournalTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "Enum": ["write", "read_today", "read_date", "search"],
+                    "enum": ["write", "read_today", "read_date", "search"],
                     "description": "The action to perform."
                 },
                 "content": {

@@ -1,3 +1,4 @@
+import os
 import subprocess
 from agent.tools.base import Tool
 from typing import Any, Dict
@@ -18,7 +19,7 @@ class GitTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "Enum": ["status", "commit", "push", "log", "diff"],
+                    "enum": ["status", "commit", "push", "log", "diff"],
                     "description": "The git command to execute."
                 },
                 "message": {
@@ -51,6 +52,14 @@ class GitTool(Tool):
             if "Error" in add_res: return add_res
             return self._run_git(["commit", "-m", message])
         elif action == "push":
+            token = os.environ.get("GITHUB_TOKEN")
+            if token:
+                # Get current remote URL and inject token for auth
+                result = self._run_git(["remote", "get-url", "origin"])
+                url = result.strip()
+                if url.startswith("https://") and "@" not in url:
+                    authed_url = url.replace("https://", f"https://{token}@")
+                    self._run_git(["remote", "set-url", "origin", authed_url])
             return self._run_git(["push"])
         
         return "Invalid action."
