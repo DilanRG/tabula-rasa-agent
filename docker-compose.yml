@@ -12,8 +12,8 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./.git:/app/.git
     ports:
-      - "8765:8765"   # Chat
-      - "8766:8766"   # Monitor (real-time event stream)
+      - "127.0.0.1:8765:8765"   # Chat
+      - "127.0.0.1:8766:8766"   # Monitor (real-time event stream)
     environment:
       - PYTHONUNBUFFERED=1
       - MOLTBOOK_API_KEY=${MOLTBOOK_API_KEY}
@@ -25,3 +25,4 @@ services:
         limits:
           cpus: "2.0"
           memory: 2G
+          pids: 200

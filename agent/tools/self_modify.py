@@ -41,7 +41,7 @@ class SelfModifyTool(Tool):
         allowed_dir = "/app/agent"
         target_path = os.path.normpath(os.path.join("/app", filepath))
 
-        if not target_path.startswith(allowed_dir):
+        if not (target_path + os.sep).startswith(allowed_dir + os.sep):
             return "Error: Security violation. You can only modify files inside the 'agent/' folder."
 
         if action == "list":

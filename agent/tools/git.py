@@ -60,6 +60,10 @@ class GitTool(Tool):
                 if url.startswith("https://") and "@" not in url:
                     authed_url = url.replace("https://", f"https://{token}@")
                     self._run_git(["remote", "set-url", "origin", authed_url])
+                    push_result = self._run_git(["push"])
+                    # Restore clean URL to avoid leaking token in .git/config
+                    self._run_git(["remote", "set-url", "origin", url])
+                    return push_result
             return self._run_git(["push"])
         
         return "Invalid action."

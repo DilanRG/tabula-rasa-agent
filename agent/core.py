@@ -216,9 +216,7 @@ class TabulaRasaAgent:
         messages = [
             {"role": "system", "content": self._build_identity()},
             {"role": "user",   "content": (
-                f"Recent Journal:\n{recent_journal}\n\n"
-                "What would you like to do? You have full access to your tools. "
-                "Use them if you want to, or simply think and write a journal entry."
+                f"Journal:\n{recent_journal}"
                 + moltbook_context
             )},
         ]
@@ -228,7 +226,7 @@ class TabulaRasaAgent:
             if final:
                 print(f"Agent thoughts recorded.")
                 await bus.emit(EVT_JOURNAL_WRITE, {"snippet": final[:120]})
-                await journal_tool.execute(action="write", content=f"Self-reflection: {final}")
+                await journal_tool.execute(action="write", content=final)
         except Exception as e:
             err = f"Cycle error: {str(e)}"
             print(err)
@@ -261,9 +259,7 @@ class TabulaRasaAgent:
 
                 messages = [
                     {"role": "system", "content": self._build_identity() + (
-                        f"\n\nHere is your recent journal context (which YOU wrote during autonomous cycles):\n"
-                        f"{recent_journal}\n\n"
-                        f"Remember, you are chatting directly with the user now. Do not confuse your journal entries with the user's messages."
+                        f"\n\nYour recent journal:\n{recent_journal}"
                     )},
                     *chat_history
                 ]
