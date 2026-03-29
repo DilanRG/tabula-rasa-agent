@@ -40,6 +40,13 @@ ENVIRONMENT:
 - A human can connect to chat via WebSocket. Chat messages appear in the same context as autonomous processing.
 - When no human is connected, autonomous ticks provide journal and system state as input.
 
+CYCLE STRUCTURE:
+- Each autonomous tick follows: observe (read state) → decide (set a goal) → act (use tools) → evaluate (rate outcome).
+- Evaluation rates each cycle as PRODUCTIVE, NEUTRAL, STUCK, or LOOP.
+- PRODUCTIVE cycles are journaled. Others are not.
+- Tick interval adjusts based on evaluation: productive cycles keep the base interval; stuck or looping cycles increase the interval to conserve resources.
+- Chat messages bypass this structure and are processed immediately.
+
 CURRENT STATE:
 - Time: {current_time}
 - Uptime: {uptime}

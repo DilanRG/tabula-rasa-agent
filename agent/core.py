@@ -1,8 +1,8 @@
 """
-Tabula Rasa Agent v2 — Unified loop architecture.
+Tabula Rasa Agent v3 — OODA cycle architecture.
 
-One loop. One context window. Chat messages are stimuli, not a separate mode.
-The agent decides what to do, when to sleep, and when to act.
+One loop. One context window. OODA-structured autonomous ticks with
+evaluation-driven tick intervals. Chat messages bypass cycle structure.
 """
 import os
 import re
@@ -13,10 +13,12 @@ import uuid
 import asyncio
 import websockets
 from datetime import datetime, timedelta
+from typing import List
 
 from agent.llm import LLMManager, load_config
 from agent.identity import get_identity_prompt
 from agent.context import ContextWindow
+from agent.cycle import CycleManager
 from agent.stimulus import Stimulus, StimulusType, StimulusQueue
 from agent.events import (
     bus, EVT_CYCLE_START, EVT_CYCLE_END, EVT_MODEL_CALL,
@@ -43,7 +45,13 @@ class TabulaRasaAgent:
         self.idle_timeout_minutes = 20
 
         # Unified context — shared across all activity
-        self.context = ContextWindow(max_tokens=24000)
+        self.context = ContextWindow(
+            max_tokens=24000,
+            summarize_fn=self._summarize_trimmed,
+        )
+
+        # OODA cycle manager
+        self.cycle_manager = CycleManager()
 
         # Stimulus queue — the single input channel
         self.stimuli = StimulusQueue()
@@ -51,16 +59,34 @@ class TabulaRasaAgent:
         # Chat state — just a set of connected websockets + response events
         self.chat_clients: dict[websockets.WebSocketServerProtocol, asyncio.Event] = {}
 
-        # Timing
-        self.tick_interval = 30.0   # seconds between autonomous ticks
-        self.tick_interval_base = 30.0
-        self.tick_interval_max = 600.0  # 10 minutes
+        # Timing — read from config
+        auto_cfg = self.config.get("autonomous", {})
+        self.tick_interval_base = float(auto_cfg.get("min_interval_seconds", 30))
+        self.tick_interval = self.tick_interval_base
+        self.tick_interval_max = float(auto_cfg.get("max_interval_seconds", 300))
 
         # Model preference (agent can change via switch_model)
         self.current_model = "large"
 
         # Moltbook check throttle
         self._last_moltbook_check: datetime | None = None
+
+    # ── Summarization callback for context trimming ─────────────────────
+
+    async def _summarize_trimmed(self, trimmed_text: str) -> str:
+        """Use small model to summarize trimmed context."""
+        try:
+            response = await self.llm.chat(
+                [
+                    {"role": "system", "content": "Summarize this conversation context in 2-3 sentences. Focus on key decisions, goals, and outcomes."},
+                    {"role": "user", "content": trimmed_text},
+                ],
+                model_type="small",
+                tools=[],
+            )
+            return (response.choices[0].message.content or "").strip()[:500]
+        except Exception:
+            return "Earlier context was trimmed."
 
     # ── Tool discovery ───────────────────────────────────────────────────
 
@@ -116,12 +142,21 @@ class TabulaRasaAgent:
         await bus.emit(EVT_TOOL_CALL, {"tool": tool_name, "args": tool_args})
         print(f"  -> Tool: {tool_name}  args={tool_args}")
         try:
-            result = await self.tools[tool_name].execute(**tool_args)
+            result = await asyncio.wait_for(
+                self.tools[tool_name].execute(**tool_args),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            result = f"Tool error: {tool_name} timed out after 30s"
         except Exception as e:
             result = f"Tool error: {str(e)}"
         result_str = str(result)[:TOOL_RESULT_CAP]
         await bus.emit(EVT_TOOL_RESULT, {"tool": tool_name, "result": result_str[:300]})
         print(f"  <- Result [{tool_name}]: {result_str[:120]}")
+
+        # Track action in cycle manager
+        self.cycle_manager.record_action(tool_name)
+
         return result_str
 
     # ── Content-embedded tool call parser (for smaller models) ───────────
@@ -166,8 +201,7 @@ class TabulaRasaAgent:
     async def _agentic_loop(self) -> tuple[str, int]:
         """Call the LLM repeatedly until it stops calling tools.
 
-        Returns the final text response (may be empty if the model
-        exhausted MAX_TOOL_TURNS).
+        Returns the final text response and number of tools called.
         """
         openai_tools = [t.to_openai_tool() for t in self.tools.values()]
         final_content = ""
@@ -273,6 +307,25 @@ class TabulaRasaAgent:
 
                 elif tool_name == "reboot":
                     print("[REBOOT] Agent requested reboot.")
+                    await bus.emit(EVT_STATUS, {"message": "Reboot requested"})
+                    # Notify chat clients
+                    for ws_client in list(self.chat_clients.keys()):
+                        try:
+                            await ws_client.send(json.dumps({
+                                "type": "status",
+                                "content": "Agent is rebooting...",
+                            }))
+                        except Exception:
+                            pass
+                    # Flush journal
+                    if "journal" in self.tools:
+                        try:
+                            await self.tools["journal"].execute(
+                                action="write",
+                                content="[SYSTEM] Reboot requested. Shutting down.",
+                            )
+                        except Exception:
+                            pass
                     sys.exit(0)
 
         else:
@@ -293,48 +346,70 @@ class TabulaRasaAgent:
 
         return final_content, tools_called
 
-    # ── Tick context injection ───────────────────────────────────────────
+    # ── Cycle evaluation (autonomous ticks only) ─────────────────────────
 
-    async def _inject_tick_context(self):
-        """Add autonomous tick context to the rolling window."""
-        parts = [f"[Tick at {datetime.now().strftime('%H:%M:%S')}]"]
+    async def _evaluate_cycle(self, goal: str, content: str, actions: List[str]) -> float:
+        """Use small model to evaluate the cycle outcome. Returns score."""
+        prompt = self.cycle_manager.build_evaluate_prompt(goal, content, actions)
+        try:
+            response = await self.llm.chat(
+                [
+                    {"role": "system", "content": "You are a cycle evaluator. Reply with exactly one word: PRODUCTIVE, NEUTRAL, STUCK, or LOOP."},
+                    {"role": "user", "content": prompt},
+                ],
+                model_type="small",
+                tools=[],
+            )
+            eval_text = (response.choices[0].message.content or "").strip()
+            return self.cycle_manager.parse_score(eval_text)
+        except Exception:
+            return 0.5  # default to NEUTRAL on failure
 
-        # Journal
-        if "journal" in self.tools:
-            journal = await self.tools["journal"].execute(action="read_today")
-            parts.append(f"\nJournal today:\n{journal}")
+    # ── Goal extraction from first LLM response ─────────────────────────
 
-        # Knowledge graph stats
-        if "knowledge_graph" in self.tools:
-            try:
-                stats = await self.tools["knowledge_graph"].execute(action="stats")
-                parts.append(f"\nKnowledge graph: {stats}")
-            except Exception:
-                pass
+    @staticmethod
+    def _extract_goal(content: str) -> str:
+        """Extract a goal from the agent's response text."""
+        if not content:
+            return "unknown"
+        # Check for explicit goal markers (if agent learns to use them)
+        for marker in ("[GOAL]", "Goal:"):
+            idx = content.find(marker)
+            if idx != -1:
+                line = content[idx:].split("\n")[0]
+                return line.replace(marker, "").strip()[:100]
+        # Take the first meaningful sentence
+        for sentence in content.replace("\n", ". ").split("."):
+            cleaned = sentence.strip()
+            if len(cleaned) > 10:
+                return cleaned[:100]
+        return content[:100]
 
-        # Moltbook dashboard (throttled to every 30 min)
-        if os.environ.get("MOLTBOOK_API_KEY"):
-            now = datetime.now()
-            if (self._last_moltbook_check is None
-                    or (now - self._last_moltbook_check) > timedelta(minutes=30)):
-                try:
-                    home = await self.tools["moltbook"].execute(action="home")
-                    parts.append(f"\nMoltbook dashboard:\n{home}")
-                    self._last_moltbook_check = now
-                except Exception:
-                    pass
+    # ── Tick context injection (OODA observe phase) ──────────────────────
 
-        self.context.add_user("\n".join(parts))
+    async def _inject_cycle_start(self):
+        """Build and inject OODA observe prompt for autonomous tick."""
+        now = datetime.now()
+        # Throttle moltbook checks to every 30 min
+        include_moltbook = (
+            self._last_moltbook_check is None
+            or (now - self._last_moltbook_check) >= timedelta(minutes=30)
+        )
+        if include_moltbook:
+            self._last_moltbook_check = now
+
+        session_state = await self.cycle_manager.build_session_state(
+            self.tools, include_moltbook=include_moltbook,
+        )
+        prompt = self.cycle_manager.build_observe_prompt(
+            session_state, now.strftime("%H:%M:%S"),
+        )
+        self.context.add_user(prompt)
 
     # ── Stream to chat clients ───────────────────────────────────────────
 
     async def _stream_to_chat(self, content: str):
-        """Send the agent's text response to chat clients waiting for a reply.
-
-        Only streams to clients whose response_event is cleared (meaning they
-        sent a message and are waiting).  This prevents autonomous broadcasts
-        from confusing clients that aren't expecting a response.
-        """
+        """Send the agent's text response to chat clients waiting for a reply."""
         if not self.chat_clients:
             return
         dead = []
@@ -464,7 +539,7 @@ class TabulaRasaAgent:
         )
         print(f"Chat    server: ws://0.0.0.0:{self.config['chat']['port']}")
         print(f"Monitor server: ws://0.0.0.0:8766")
-        await bus.emit(EVT_STATUS, {"message": "Agent v2 started"})
+        await bus.emit(EVT_STATUS, {"message": "Agent v3 started"})
 
         # Heartbeat for monitor
         async def heartbeat():
@@ -511,15 +586,15 @@ class TabulaRasaAgent:
             is_chat_cycle = False
 
             if stimulus is None:
-                # Autonomous tick
-                await self._inject_tick_context()
+                # Autonomous tick — OODA observe phase
+                self.cycle_manager.start_cycle(self.cycle_count + 1)
+                await self._inject_cycle_start()
 
             elif stimulus.type == StimulusType.CHAT_MESSAGE:
                 self.context.add_user(stimulus.payload["text"])
                 is_chat_cycle = True
 
             elif stimulus.type == StimulusType.CHAT_CONNECT:
-                # Already added to chat_clients in handle_chat
                 continue
 
             elif stimulus.type == StimulusType.CHAT_DISCONNECT:
@@ -538,22 +613,43 @@ class TabulaRasaAgent:
             try:
                 final_content, tools_called = await self._agentic_loop()
 
-                # Stream to chat clients if any are connected
+                # Stream to chat clients if any are waiting
                 await self._stream_to_chat(final_content)
 
-                # Only journal autonomous thoughts — not chat responses
                 if not is_chat_cycle:
-                    await self._journal_thoughts(final_content)
+                    # ── OODA evaluate phase (autonomous only) ────────────
+                    goal = self._extract_goal(final_content)
+                    self.cycle_manager.set_goal(goal)
 
-                # Adjust tick interval
-                if tools_called > 0:
-                    self.tick_interval = self.tick_interval_base
-                else:
-                    self.tick_interval = min(
-                        self.tick_interval * 2,
-                        self.tick_interval_max,
+                    actions = list(self.cycle_manager.current.actions_taken) if self.cycle_manager.current else []
+                    score = await self._evaluate_cycle(goal, final_content, actions)
+                    self.cycle_manager.complete_cycle(
+                        evaluation=f"score={score}", score=score,
                     )
-                    print(f"  (no tools — next tick in {self.tick_interval:.0f}s)")
+
+                    # Loop detection override
+                    if self.cycle_manager.detect_loop():
+                        score = -1.0
+                        print("  [LOOP] Detected repetitive goals — increasing interval")
+
+                    # Evaluation-driven tick interval
+                    self.tick_interval = self.cycle_manager.compute_tick_interval(
+                        self.tick_interval_base, score,
+                    )
+                    self.tick_interval = min(self.tick_interval, self.tick_interval_max)
+
+                    # Journal productive and neutral cycles
+                    journal_entry = self.cycle_manager.format_journal_entry(
+                        goal, final_content, score, tools_called,
+                    )
+                    if journal_entry:
+                        await self._journal_thoughts(journal_entry)
+
+                    score_label = "PRODUCTIVE" if score >= 0.8 else "NEUTRAL" if score >= 0.3 else "STUCK" if score >= 0 else "LOOP"
+                    print(f"  [EVAL] {score_label} (score={score}) — next tick in {self.tick_interval:.0f}s")
+                else:
+                    # Chat cycle — reset tick interval
+                    self.tick_interval = self.tick_interval_base
 
             except Exception as e:
                 err = f"Cycle error: {e}"

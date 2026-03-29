@@ -56,10 +56,6 @@ def _init_db():
     conn.close()
 
 
-# Initialize on import
-_init_db()
-
-
 class KnowledgeGraphTool(Tool):
     @property
     def name(self) -> str:
@@ -130,6 +126,7 @@ class KnowledgeGraphTool(Tool):
         }
 
     async def execute(self, action: str, **kwargs: Any) -> str:
+        _init_db()
         try:
             if action == "add_entity":
                 return self._add_entity(kwargs.get("name", ""), kwargs.get("type", "concept"), kwargs.get("description", ""))

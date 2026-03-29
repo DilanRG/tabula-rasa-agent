@@ -1,5 +1,4 @@
 openai
-asyncio
 pyyaml
 websockets
 rich

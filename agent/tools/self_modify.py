@@ -57,6 +57,8 @@ class SelfModifyTool(Tool):
         if action == "write":
             if "config.yaml" in target_path or "Dockerfile" in target_path or ".env" in target_path:
                 return "Error: Security violation. You cannot modify configuration or container system files."
+            if not target_path.endswith(".py"):
+                return "Error: Only Python (.py) files can be written to the agent directory."
 
             parent = os.path.dirname(target_path)
             if parent:                                   # only makedirs when there IS a parent dir

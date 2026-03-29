@@ -8,12 +8,14 @@ message with tool_calls is never orphaned from its tool-result messages).
 """
 import copy
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: 1 token ≈ 4 chars."""
-    return len(text) // 4
+    """Rough token estimate: max of word count and chars/4."""
+    words = len(text.split())
+    chars = len(text) // 4
+    return max(words, chars)
 
 
 def _message_tokens(msg: Dict[str, Any]) -> int:
@@ -30,9 +32,14 @@ def _message_tokens(msg: Dict[str, Any]) -> int:
 class ContextWindow:
     """Single continuous message history shared across all agent activity."""
 
-    def __init__(self, max_tokens: int = 24000):
+    def __init__(
+        self,
+        max_tokens: int = 24000,
+        summarize_fn: Optional[Callable[[str], Coroutine[Any, Any, str]]] = None,
+    ):
         self._messages: List[Dict[str, Any]] = []
         self.max_tokens = max_tokens
+        self._summarize_fn = summarize_fn
 
     # ── Mutators ─────────────────────────────────────────────────────────
 
@@ -135,4 +142,51 @@ class ContextWindow:
         # If no single cut is enough, take the most aggressive safe cut
         cut = safe_points[-1]
         remaining = self._messages[cut:]
+        self._messages = [system_msg, placeholder] + remaining
+
+    async def trim_with_summary(self):
+        """Trim and replace the placeholder with a summary of trimmed content.
+
+        If a summarize_fn was provided, the trimmed messages are summarized
+        by the small model before being discarded. Otherwise falls back to
+        the standard placeholder.
+        """
+        total = self.total_tokens()
+        if total <= self.max_tokens:
+            return
+
+        if not self._summarize_fn:
+            self._trim()
+            return
+
+        safe_points = self._find_safe_trim_points()
+        if not safe_points:
+            return
+
+        system_msg = self._messages[0]
+        system_tokens = _message_tokens(system_msg)
+
+        # Find the cut point
+        for cut in safe_points:
+            remaining = self._messages[cut:]
+            remaining_tokens = sum(_message_tokens(m) for m in remaining)
+            # Leave room for a summary (~200 tokens)
+            if system_tokens + 200 + remaining_tokens <= self.max_tokens:
+                break
+        else:
+            cut = safe_points[-1]
+            remaining = self._messages[cut:]
+
+        # Collect trimmed content for summarization
+        trimmed = self._messages[1:cut]  # skip system msg
+        trimmed_text = "\n".join(
+            f"[{m['role']}] {(m.get('content') or '')[:200]}" for m in trimmed
+        )
+
+        try:
+            summary = await self._summarize_fn(trimmed_text[:3000])
+        except Exception:
+            summary = "[Earlier context was trimmed. Details no longer available.]"
+
+        placeholder = {"role": "user", "content": f"[Context summary: {summary}]"}
         self._messages = [system_msg, placeholder] + remaining
