@@ -501,16 +501,22 @@ class TabulaRasaAgent:
                         pass
                 sys.exit(0)
 
-            # Wait for stimulus or tick timeout
-            stimulus = await self.stimuli.get(timeout=self.tick_interval)
+            # Wait for stimulus or tick timeout (capped by idle deadline)
+            idle_remaining = (self.idle_timeout_minutes * 60) - \
+                (datetime.now() - self.last_tool_call).total_seconds()
+            wait_time = max(1, min(self.tick_interval, idle_remaining))
+            stimulus = await self.stimuli.get(timeout=wait_time)
 
             # ── Handle stimulus ──────────────────────────────────────────
+            is_chat_cycle = False
+
             if stimulus is None:
                 # Autonomous tick
                 await self._inject_tick_context()
 
             elif stimulus.type == StimulusType.CHAT_MESSAGE:
                 self.context.add_user(stimulus.payload["text"])
+                is_chat_cycle = True
 
             elif stimulus.type == StimulusType.CHAT_CONNECT:
                 # Already added to chat_clients in handle_chat
@@ -535,8 +541,9 @@ class TabulaRasaAgent:
                 # Stream to chat clients if any are connected
                 await self._stream_to_chat(final_content)
 
-                # Journal the agent's thoughts
-                await self._journal_thoughts(final_content)
+                # Only journal autonomous thoughts — not chat responses
+                if not is_chat_cycle:
+                    await self._journal_thoughts(final_content)
 
                 # Adjust tick interval
                 if tools_called > 0:
