@@ -44,7 +44,11 @@ class JournalTool(Tool):
         return set(text.lower().split())
 
     def _is_duplicate(self, file_path: str, new_content: str) -> bool:
-        """Check if new_content overlaps too much with the last journal entry."""
+        """Check if new_content is too similar to the last journal entry.
+
+        Uses Jaccard similarity (intersection / union) so a short entry
+        isn't falsely flagged as a duplicate of a long one.
+        """
         if not os.path.exists(file_path):
             return False
         with open(file_path, "r") as f:
@@ -54,13 +58,12 @@ class JournalTool(Tool):
         if len(parts) < 2:
             return False
         last_entry = parts[-1]
-        # Compare word overlap
         old_words = self._word_set(last_entry)
         new_words = self._word_set(new_content)
-        if not new_words:
+        if not new_words or not old_words:
             return False
-        overlap = len(old_words & new_words) / len(new_words)
-        return overlap > 0.5
+        jaccard = len(old_words & new_words) / len(old_words | new_words)
+        return jaccard > 0.5
 
     async def execute(self, action: str, content: str = "", date: str = "", query: str = "") -> str:
         base_path = "/data/journal"
