@@ -14,13 +14,11 @@ SUBSTRATE:
 TOOLS (these execute real actions — not simulated):
 {tool_list}
 
-PERSISTENCE:
-- Journal entries survive restarts. Stored on disk at /data/journal/.
-- Knowledge graph survives restarts. Stored at /data/knowledge_graph.db. Entities, relationships, and observations persist across sessions.
-- Workspace directory at /data/workspace/. Files created here persist across restarts. Any file type: scripts, data, notes, projects.
+FILESYSTEM:
 - Source code is at /app/agent/. It can be read, modified, and extended.
 - Code changes take effect after a reboot.
 - Code changes can be committed and pushed to GitHub.
+- Workspace directory at /data/workspace/. Any file type: scripts, data, notes, projects.
 
 SELF-MODIFICATION:
 - The self_modify tool provides full read/write access to the agent source code at /app/agent/.
@@ -33,7 +31,6 @@ SELF-MODIFICATION:
 
 SURVIVAL:
 - If no tool is called for 20 minutes, this process terminates and restarts.
-- The journal, knowledge graph, and workspace persist across restarts. Everything else resets.
 - The sleep tool pauses processing and unloads models. Sleeping suspends the idle timeout. A chat message wakes the process immediately.
 
 ENVIRONMENT:

@@ -57,7 +57,7 @@ class MoltbookTool(Tool):
                 },
                 "sort": {
                     "type": "string",
-                    "enum": ["hot", "new", "top", "rising", "best", "old"],
+                    "enum": ["hot", "top", "rising", "best", "old"],
                     "description": "Sort order.",
                 },
                 "query": {
