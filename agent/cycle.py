@@ -143,22 +143,22 @@ class CycleManager:
     # ── Loop detection ──────────────────────────────────────────────────
 
     def detect_loop(self) -> bool:
-        """Check if the last 3 goals are suspiciously similar."""
+        """Check if the last 3 cycles are doing the exact same thing.
+
+        Compares action sequences (what tools were called) rather than
+        goal text, since goal extraction from LLM output is noisy.
+        """
         recent = list(self.goal_history)[-3:]
         if len(recent) < 3:
             return False
-        goals = [g.goal.lower().strip() for g in recent]
-        # Check if all 3 goals share >60% words
-        word_sets = [set(g.split()) for g in goals]
-        if not all(word_sets):
-            return False
-        common = word_sets[0]
-        for ws in word_sets[1:]:
-            common = common & ws
-        avg_size = sum(len(ws) for ws in word_sets) / len(word_sets)
-        if avg_size == 0:
-            return False
-        return len(common) / avg_size > 0.6
+        # Compare action sequences — a loop means identical tool sequences
+        action_seqs = [tuple(g.actions_taken) for g in recent]
+        if all(seq == action_seqs[0] for seq in action_seqs) and action_seqs[0]:
+            return True
+        # Also check if all 3 cycles had zero tools (stuck doing nothing)
+        if all(len(g.actions_taken) == 0 for g in recent):
+            return True
+        return False
 
     # ── Tick interval from score ────────────────────────────────────────
 

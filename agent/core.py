@@ -348,42 +348,58 @@ class TabulaRasaAgent:
 
     # ── Cycle evaluation (autonomous ticks only) ─────────────────────────
 
-    async def _evaluate_cycle(self, goal: str, content: str, actions: List[str]) -> float:
-        """Use small model to evaluate the cycle outcome. Returns score."""
-        prompt = self.cycle_manager.build_evaluate_prompt(goal, content, actions)
-        try:
-            response = await self.llm.chat(
-                [
-                    {"role": "system", "content": "You are a cycle evaluator. Reply with exactly one word: PRODUCTIVE, NEUTRAL, STUCK, or LOOP."},
-                    {"role": "user", "content": prompt},
-                ],
-                model_type="small",
-                tools=[],
-            )
-            eval_text = (response.choices[0].message.content or "").strip()
-            return self.cycle_manager.parse_score(eval_text)
-        except Exception:
-            return 0.5  # default to NEUTRAL on failure
+    def _evaluate_cycle(self, goal: str, content: str, actions: List[str], tools_called: int) -> float:
+        """Evaluate cycle outcome using heuristics.
+
+        LLM-based evaluation was unreliable (4B model biased toward STUCK).
+        Simple heuristics based on observable signals are more consistent:
+        - Tools called successfully = doing something
+        - Content produced = thinking happened
+        - Errors in results = partial failure
+        """
+        if tools_called == 0 and not content:
+            return 0.0  # STUCK — nothing happened
+        if tools_called == 0 and content:
+            return 0.5  # NEUTRAL — thought but didn't act
+        # Had tool calls — check for errors
+        error_actions = sum(1 for a in actions if a in ("unknown",))
+        if tools_called > 0 and content:
+            return 1.0  # PRODUCTIVE — acted and produced output
+        if tools_called > 0:
+            return 0.5  # NEUTRAL — acted but no final text
+        return 0.5
 
     # ── Goal extraction from first LLM response ─────────────────────────
 
     @staticmethod
-    def _extract_goal(content: str) -> str:
-        """Extract a goal from the agent's response text."""
-        if not content:
+    def _extract_goal(content: str, actions: list[str] | None = None) -> str:
+        """Extract a goal from the agent's response and actions.
+
+        Uses tool calls as primary signal (they reflect what the agent
+        actually did), with text as fallback.
+        """
+        if not content and not actions:
             return "unknown"
-        # Check for explicit goal markers (if agent learns to use them)
+        # Check for explicit goal markers
         for marker in ("[GOAL]", "Goal:"):
             idx = content.find(marker)
             if idx != -1:
                 line = content[idx:].split("\n")[0]
                 return line.replace(marker, "").strip()[:100]
-        # Take the first meaningful sentence
+        # Build goal from actions + first sentence of content
+        parts = []
+        if actions:
+            # Deduplicate while preserving order
+            seen = set()
+            unique = [a for a in actions if a not in seen and not seen.add(a)]
+            parts.append(" → ".join(unique[:5]))
+        # Add first meaningful sentence from content
         for sentence in content.replace("\n", ". ").split("."):
             cleaned = sentence.strip()
-            if len(cleaned) > 10:
-                return cleaned[:100]
-        return content[:100]
+            if len(cleaned) > 15:
+                parts.append(cleaned[:80])
+                break
+        return " | ".join(parts)[:120] if parts else content[:100]
 
     # ── Tick context injection (OODA observe phase) ──────────────────────
 
@@ -618,11 +634,10 @@ class TabulaRasaAgent:
 
                 if not is_chat_cycle:
                     # ── OODA evaluate phase (autonomous only) ────────────
-                    goal = self._extract_goal(final_content)
-                    self.cycle_manager.set_goal(goal)
-
                     actions = list(self.cycle_manager.current.actions_taken) if self.cycle_manager.current else []
-                    score = await self._evaluate_cycle(goal, final_content, actions)
+                    goal = self._extract_goal(final_content, actions)
+                    self.cycle_manager.set_goal(goal)
+                    score = self._evaluate_cycle(goal, final_content, actions, tools_called)
                     self.cycle_manager.complete_cycle(
                         evaluation=f"score={score}", score=score,
                     )
